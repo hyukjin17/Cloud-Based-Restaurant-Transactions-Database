@@ -1,0 +1,155 @@
+---
+title: "Analyze Sales"
+subtitle: "CS5200 Practicum I"
+author: "Chung, Hyuk Jin"
+date: "Summer 2025"
+output:
+  pdf_document:
+    latex_engine: xelatex
+  html_document:
+    df_print: paged
+---
+
+```{r connectDB, echo=FALSE}
+# Install RMariaDB package if it does not exist (required for MySQL)
+if (!requireNamespace("RMariaDB", quietly = TRUE)) {
+  install.packages("RMariaDB")
+}
+library(DBI)
+library(RMariaDB)
+library(knitr)
+library(kableExtra)
+library(dotenv)
+
+load_dot_env(".env")  # loads environment variables
+
+# Connect to the Aiven MySQL DB
+dbcon <- dbConnect(MariaDB(),
+                   dbname = Sys.getenv("DB_NAME"),
+                   host = Sys.getenv("DB_HOST"),
+                   port = Sys.getenv("DB_PORT"),
+                   user = Sys.getenv("DB_USER"),
+                   password = Sys.getenv("DB_PASS"))
+
+```
+
+## Analysis by Restaurant
+```{r queryByRestaurant, echo=FALSE}
+
+query <- "
+SELECT v.Restaurant, COUNT(*) AS `Total Visits`,
+       COUNT(DISTINCT v.CustomerEmail) AS `Unique Customers`,
+       COUNT(DISTINCT CASE WHEN c.LoyaltyMember = 1 THEN c.CustomerEmail END) AS `Loyalty Members`,
+       ROUND(SUM(v.FoodBill), 2) AS `Total Food`,
+       ROUND(SUM(v.AlcoholBill), 2) AS `Total Alcohol`,
+       ROUND(SUM(v.AlcoholBill + v.FoodBill), 2) AS `Total Food & Alcohol`
+FROM Visits v
+LEFT JOIN Customers c ON v.CustomerEmail = c.CustomerEmail
+GROUP BY Restaurant;
+"
+
+summary_by_restaurant <- dbGetQuery(dbcon, query)
+
+# Display table
+if (knitr::is_latex_output()) {
+  summary_by_restaurant %>%
+    kable("latex", booktabs = TRUE, caption = "Restaurant Summary", align = "lrrrrrr") %>%
+    kable_styling(latex_options = c("scale_down", "condensed", "striped", "hold_position"))
+} else {
+  summary_by_restaurant %>%
+    kable("html", caption = "Restaurant Summary", align = "lrrrrrr") %>%
+    kable_styling(bootstrap_options = c("condensed", "striped", "bordered"),
+                  full_width = FALSE)
+}
+```
+
+## Analysis by Year
+```{r queryByYear, echo=FALSE}
+
+# Get unique years from VisitDate
+years_query <- "
+SELECT DISTINCT YEAR(VisitDate) AS Year
+FROM Visits
+WHERE VisitDate IS NOT NULL
+ORDER BY Year
+"
+# Save years as a vector
+years <- dbGetQuery(dbcon, years_query)$Year
+
+# Create a vector of strings to pass into the query (for each year)
+revenue_cols <- paste0("ROUND(SUM(CASE WHEN YEAR(VisitDate) = ", years, 
+                       " THEN FoodBill + AlcoholBill END), 2) AS `", years, "`")
+# Build a query to display each individual years in columns
+revenue_query <- paste0("
+  SELECT 'Total Revenue' AS Metrics, ", paste(revenue_cols, collapse = ",\n"))
+
+# Create a vector of strings to pass into the query (for each year)
+party_avg_cols <- paste0("ROUND(AVG(CASE WHEN YEAR(VisitDate) = ", years, 
+                         " THEN FoodBill + AlcoholBill END), 2) AS `", years, "`")
+# Build a query to display each individual years in columns
+party_avg_query <- paste0("
+  SELECT 'Avg Spend per Party' AS Metrics, ", paste(party_avg_cols, collapse = ",\n"))
+
+# Create a vector of strings to pass into the query (for each year)
+party_size_cols <- paste0("ROUND(AVG(CASE WHEN YEAR(VisitDate) = ", years, 
+                          " THEN PartySize END), 2) AS `", years, "`")
+# Build a query to display each individual years in columns
+party_size_query <- paste0("
+  SELECT 'Avg Party Size' AS Metrics, ", paste(party_size_cols, collapse = ",\n"))
+
+# Combine all 3 queries into one
+query <- paste(
+  revenue_query,
+  "FROM Visits",
+  "UNION ALL",
+  party_avg_query,
+  "FROM Visits",
+  "UNION ALL",
+  party_size_query,
+  "FROM Visits"
+)
+
+# Execute the query
+summary_by_year <- dbGetQuery(dbcon, query)
+
+# Display table
+if (knitr::is_latex_output()) {
+  summary_by_year %>%
+    kable("latex", booktabs = TRUE, caption = "Summary by Year") %>%
+    kable_styling(latex_options = c("scale_down", "condensed", "striped", "hold_position"))
+} else {
+  summary_by_year %>%
+    kable("html", caption = "Summary by Year") %>%
+    kable_styling(bootstrap_options = c("condensed", "striped", "bordered"),
+                  full_width = FALSE)
+}
+```
+
+## Trend by Year
+```{r graphRevenueByYear, echo=FALSE}
+# Extract revenue and years from the summary table
+years <- as.numeric(colnames(summary_by_year)[-1])
+revenue <- as.numeric(summary_by_year[1, -1])
+names(revenue) <- years
+
+# Add padding to the top of the y-axis to fit all data labels
+y_range <- range(revenue, na.rm = TRUE)
+y_range[2] <- y_range[2] * 1.15
+
+# Basic line chart
+plot(names(revenue), revenue,
+     type = "b", col = "blue", pch = 1, lwd = 2, ylim = y_range,
+     xlab = "Year", ylab = "Total Revenue", main = "Total Revenue by Year")
+
+# Add data labels above each point
+text(names(revenue), revenue,
+     labels = revenue, pos = 3, cex = 0.5, col = "darkblue")
+
+```
+
+
+```{r disconnectDB, echo=FALSE}
+# Disconnect
+dbDisconnect(dbcon)
+```
+
